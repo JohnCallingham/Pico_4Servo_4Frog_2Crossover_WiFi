@@ -20,7 +20,6 @@ bool JCServoEasing::update() {
     // currentAngle needs to increase.
     currentAngle++;
     servo.write(currentAngle);
-    //Serial.printf("\n%d: Servo pin %d, delay=%d, angle = %d", millis(), this->servoPin, this->delaymS, this->currentAngle);
   
     // Have we reached the target yet?
     if (currentAngle == targetAngle) {
@@ -34,7 +33,6 @@ bool JCServoEasing::update() {
     // currentAngle needs to decrease.
     currentAngle--;
     servo.write(currentAngle);
-    //Serial.printf("\n%d: Servo pin %d, delay=%d, angle = %d", millis(), this->servoPin, this->delaymS, this->currentAngle);
   
     // Have we reached the target yet?
     if (currentAngle == targetAngle) {

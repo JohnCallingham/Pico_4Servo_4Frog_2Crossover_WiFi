@@ -12,9 +12,11 @@
 
 #define NUM_CROSSOVERS 2
 
-const int NUM_SERVO_EVENTS = (NUM_SERVOS * NUM_POS * 3);
+const int NUM_EVENTS_PER_SERVO = (NUM_POS * 3) + 1; // Add 1 event for the toggle eventID.
+const int NUM_SERVO_EVENTS = (NUM_EVENTS_PER_SERVO * NUM_SERVOS);
 const int NUM_OUTPUT_EVENTS = (NUM_OUTPUTS * 2);
-const int NUM_CROSSOVER_EVENTS = (NUM_CROSSOVERS * NUM_POS * 3);
+const int NUM_EVENTS_PER_CROSSOVER = (NUM_POS * 3) + 1; // Add 1 event for the toggle eventID.
+const int NUM_CROSSOVER_EVENTS = (NUM_EVENTS_PER_CROSSOVER * NUM_CROSSOVERS);
 
 #define NUM_EVENT NUM_SERVO_EVENTS + NUM_OUTPUT_EVENTS + NUM_CROSSOVER_EVENTS
 
@@ -35,7 +37,7 @@ const int EVENT_INDEX_CROSSOVER_END = ((EVENT_INDEX_CROSSOVER_START) + NUM_CROSS
 #define SERVO_PWM_DEG_180  2400 // this is the 'maximum' pulse length count (out of 4096)
 
 // #define SERVO_SPEED 45 // servo speed in degrees per second.
-#define SERVO_SPEED 30 // servo speed in degrees per second.
+#define SERVO_SPEED 10 // servo speed in degrees per second.
 
 // Moved from ServoStateMachine.h
 // States and Actions required to maintain the state of each servo.
@@ -51,11 +53,21 @@ enum State {
     MOVING_FROM_POSITION_3_TO_POSITION_1
   };
   
-  enum Action {
-    MOVE_TO_POSITION_1,
-    MOVE_TO_POSITION_2,
-    MOVE_TO_POSITION_3,
-    MOVE_COMPLETED
-  };
+enum Action {
+  MOVE_TO_POSITION_1,
+  MOVE_TO_POSITION_2,
+  MOVE_TO_POSITION_3,
+  MOVE_COMPLETED
+};
+
+/**
+ * Used when returning from a function with events to send.
+ * Most functions only send one event but there is a function
+ * which requires 3 events to be sent.
+ * Each int is set to -1 if no event to send.
+ */
+struct EventsToSend {
+  int event[3];
+};
 
 #endif

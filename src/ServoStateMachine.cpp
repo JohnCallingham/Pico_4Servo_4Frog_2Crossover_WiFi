@@ -4,7 +4,7 @@
 
 ServoStateMachine::ServoStateMachine() {
   // Initialise the state machine by adding all the state transitions.
-  // ================================= current state, action, event reached, event leaving, servo target position, new state
+  // ================================= current state, action, event reached(1-3), event leaving(1-3), servo target position(1-3), new state
   stateMachine.addTransition(StateTransition(UNKNOWN, MOVE_TO_POSITION_1, 0, 0, 1, MOVING_TO_POSITION_1));
   stateMachine.addTransition(StateTransition(UNKNOWN, MOVE_TO_POSITION_2, 0, 0, 2, MOVING_TO_POSITION_2));
   stateMachine.addTransition(StateTransition(UNKNOWN, MOVE_TO_POSITION_3, 0, 0, 3, MOVING_TO_POSITION_3));
@@ -16,8 +16,10 @@ ServoStateMachine::ServoStateMachine() {
   stateMachine.addTransition(StateTransition(AT_POSITION_1, MOVE_TO_POSITION_1, 1, 0, 0, AT_POSITION_1));
   stateMachine.addTransition(StateTransition(AT_POSITION_1, MOVE_TO_POSITION_2, 0, 1, 2, MOVING_TO_POSITION_2));
   stateMachine.addTransition(StateTransition(AT_POSITION_1, MOVE_TO_POSITION_3, 0, 1, 2, MOVING_FROM_POSITION_1_TO_POSITION_3));
-  stateMachine.addTransition(StateTransition(AT_POSITION_2, MOVE_TO_POSITION_1, 0, 1, 1, MOVING_TO_POSITION_1));
-  stateMachine.addTransition(StateTransition(AT_POSITION_2, MOVE_TO_POSITION_2, 1, 0, 0, AT_POSITION_2));
+  // stateMachine.addTransition(StateTransition(AT_POSITION_2, MOVE_TO_POSITION_1, 0, 1, 1, MOVING_TO_POSITION_1));
+  stateMachine.addTransition(StateTransition(AT_POSITION_2, MOVE_TO_POSITION_1, 0, 2, 1, MOVING_TO_POSITION_1));
+  // stateMachine.addTransition(StateTransition(AT_POSITION_2, MOVE_TO_POSITION_2, 1, 0, 0, AT_POSITION_2));
+  stateMachine.addTransition(StateTransition(AT_POSITION_2, MOVE_TO_POSITION_2, 2, 0, 0, AT_POSITION_2));
   stateMachine.addTransition(StateTransition(AT_POSITION_2, MOVE_TO_POSITION_3, 0, 2, 3, MOVING_TO_POSITION_3));
   stateMachine.addTransition(StateTransition(AT_POSITION_3, MOVE_TO_POSITION_1, 0, 3, 2, MOVING_FROM_POSITION_3_TO_POSITION_1));
   stateMachine.addTransition(StateTransition(AT_POSITION_3, MOVE_TO_POSITION_2, 0, 3, 2, MOVING_TO_POSITION_2));
@@ -64,6 +66,9 @@ void ServoStateMachine::initialiseServos(ServoArray servoArray) {
 
     // Attach the servo to its pin and set its initial angle.
     this->servoArray.servo[i].servoEasing.initialise(this->servoArray.servo[i].position[1].positionDegrees);
+
+    // Set the servo's initial state to mid point.
+    this->servoArray.servo[i].currentState = State::AT_POSITION_2;
   }
 }
 
@@ -85,9 +90,14 @@ void ServoStateMachine::initialiseCrossovers() {
     }
 
     // Set all crossovers to be not waiting for any servos to finish moving.
-    // Also set their current position to UNKNOWN so they don't send a leaving event when first moved.
     crossoverArray[i].waitingForPosition = UNKNOWN;
-    crossoverArray[i].currentPosition = UNKNOWN;
+
+    // // Set their current position to UNKNOWN so they don't send a leaving event when first moved.
+    // // This prevents the crossover from moving when toggled immediately after reset!!
+    // crossoverArray[i].currentPosition = UNKNOWN;
+
+    // Set their current position to AT_POSITION_2 (Mid) so they can be moved after reset.
+    crossoverArray[i].currentPosition = AT_POSITION_2;
   }
 }
 
@@ -111,14 +121,17 @@ int ServoStateMachine::update(uint8_t servoNumber) {
         switch (crossoverArray[i].waitingForPosition) {
           case AT_POSITION_1:
             crossoverArray[i].waitingForPosition = UNKNOWN; // Stop checking for both servos finished moving.
+            Serial.printf("\nCrossover %d sending reached event for position 1");
             return crossoverArray[i].position[0].eventIndexPositionReached;
             break;
           case AT_POSITION_2:
             crossoverArray[i].waitingForPosition = UNKNOWN; // Stop checking for both servos finished moving.
+            Serial.printf("\nCrossover %d sending reached event for position 2");
             return crossoverArray[i].position[1].eventIndexPositionReached;
             break;
           case AT_POSITION_3:
             crossoverArray[i].waitingForPosition = UNKNOWN; // Stop checking for both servos finished moving.
+            Serial.printf("\nCrossover %d sending reached event for position 3");
             return crossoverArray[i].position[2].eventIndexPositionReached;
             break;
         }
@@ -141,9 +154,13 @@ int ServoStateMachine::processStateTransition(uint8_t servoNumber, Action action
 
   // Check for an invalid transition.
   if (foundTransition.newState == UNKNOWN) {
-    // Give an error message and set the current state to UNKNOWN so that we may recover.
-    Serial.printf("\nServo %d invalid transition", servoNumber+1);
-    servoArray.servo[servoNumber].currentState = UNKNOWN;
+    // // Give an error message and set the current state to UNKNOWN so that we may recover.
+    // Serial.printf("\nServo %d invalid transition", servoNumber+1);
+    // servoArray.servo[servoNumber].currentState = UNKNOWN;
+
+    // Give an error message and ignore.
+    Serial.printf("\nServo %d invalid transition ignored", servoNumber+1);
+    //servoArray.servo[servoNumber].currentState = UNKNOWN;
 
     // No event to send.
     return -1;
@@ -153,6 +170,7 @@ int ServoStateMachine::processStateTransition(uint8_t servoNumber, Action action
 
   // If required set the servo's target angle.
   int targetPosition = foundTransition.setServoTargetPosition;
+  //Serial.printf("\ntargetPosition=%d", targetPosition);
   uint8_t targetPositionAngle;
   if (targetPosition != -1) {
     targetPositionAngle = servoArray.servo[servoNumber].position[targetPosition].positionDegrees;
@@ -182,4 +200,12 @@ int ServoStateMachine::eventIndexLeaving(uint8_t servoNumber, uint8_t position) 
 int ServoStateMachine::eventIndexReached(uint8_t servoNumber, uint8_t position) {
   Serial.printf("\nServo %d sending event reached position %d (%s)", servoNumber+1, position+1, POSITION_DESCRIPTION(position));
   return servoArray.servo[servoNumber].position[position].eventIndexPositionReached;
+}
+
+State ServoStateMachine::currentServoState(uint8_t servoNumber) {
+  return servoArray.servo[servoNumber].currentState;
+}
+
+State ServoStateMachine::currentCrossoverPosition(uint8_t crossoverNumber) {
+  return crossoverArray[crossoverNumber].currentPosition;
 }

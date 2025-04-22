@@ -10,7 +10,6 @@
 // MOdified DPH 2024
 // Copyright 2019 Alex Shepherd and David Harris
 //==============================================================
-
 #include "Global.h"
 
 #define NOCAN // There is no CAN controller, just WiFi.
@@ -43,6 +42,8 @@ const char* openLCB_can  = "openlcb-can";  // <-- change this if necessary
 
 #include "ServoStateMachine.h"
 ServoStateMachine servoStateMachine;
+
+#include "ConsumedEvents.h" // Helper functions for handling consumed events.
 
 // CDI (Configuration Description Information) in xml, must match MemStruct
 // See: http://openlcb.com/wp-content/uploads/2016/02/S-9.7.4.1-ConfigurationDescriptionInformation-2016-02-06.pdf
@@ -78,6 +79,10 @@ const char configDefInfo[] PROGMEM =
                   <description>This event will be sent when this servo leaves this position</description>
                 </eventid>
             </group>
+            <eventid>
+              <name>Toggle event</name>
+              <description>Receiving this event starts the servo moving to the other end</description>
+            </eventid>
         </group>
         <group>
             <name>Outputs</name>
@@ -120,6 +125,10 @@ const char configDefInfo[] PROGMEM =
                   <description>This event will be sent when the first servo leaves this position</description>
               </eventid>
             </group>
+            <eventid>
+              <name>Toggle event</name>
+              <description>Receiving this event starts this crossover's servos moving to the other end</description>
+            </eventid>
           </group>
         </group>
     )" CDIfooter;
@@ -140,11 +149,12 @@ const char configDefInfo[] PROGMEM =
             char servodesc[DESCRIPTION_LENGTH];        // description of this Servo Turnout Driver
             struct {
               char positiondesc[DESCRIPTION_LENGTH];      // description of this Servo Position
-              EventID eid;       // consumer eventID
-              uint8_t pos;       // position
-              EventID rid;        // eventID produced when position reached
-              EventID lid;        // eventID produced when position left
+              EventID eid;      // eventID consumed to move to this position
+              uint8_t pos;      // angle for this position
+              EventID rid;      // eventID produced when position reached
+              EventID lid;      // eventID produced when position left
             } pos[NUM_POS];
+            EventID tid;        // eventID consumed to toggle position
           } servos[NUM_SERVOS];
           struct {
             char desc[DESCRIPTION_LENGTH];        // description of this output
@@ -155,10 +165,11 @@ const char configDefInfo[] PROGMEM =
             char desc[DESCRIPTION_LENGTH];        // description of this crossover
             struct {
               char positiondesc[DESCRIPTION_LENGTH];      // description of this crossover position
-              EventID eid;       // consumer eventID
+              EventID eid;      // eventID consumed to move to this position
               EventID rid;      // eventID produced when position reached
               EventID lid;      // eventID produced when position left
             } pos[NUM_POS];
+            EventID tid;        // eventID consumed to toggle position
           } crossovers[NUM_CROSSOVERS];
       // ===== Enter User definitions above =====
       // items below will be included in the EEPROM, but are not part of the CDI
@@ -208,11 +219,11 @@ extern "C" {
     // ===== eventid Table =====
     // useful macro to help fill the table
 
-    // each servo position has 3 eventids
+    // each servo position has 3 eventIDs
     #define REG_POS(s,p) CEID(servos[s].pos[p].eid), PEID(servos[s].pos[p].rid), PEID(servos[s].pos[p].lid)  
 
-    // each servo has three positions
-    #define REG_SERVO(s) REG_POS(s,0), REG_POS(s,1), REG_POS(s,2)  
+    // each servo has three positions and a toggle eventID
+    #define REG_SERVO(s) REG_POS(s,0), REG_POS(s,1), REG_POS(s,2), CEID(servos[s].tid)
 
     // Each output has two events.
     #define REG_OUTPUT(s) CEID(outputs[s].setLow), CEID(outputs[s].setHigh)
@@ -221,7 +232,7 @@ extern "C" {
     #define REG_CROSSOVER_POS(s,p) CEID(crossovers[s].pos[p].eid), PEID(crossovers[s].pos[p].rid), PEID(crossovers[s].pos[p].lid)  
 
     // Each crossover has three positions.
-    #define REG_CROSSOVER(c) REG_CROSSOVER_POS(c,0), REG_CROSSOVER_POS(c,1), REG_CROSSOVER_POS(c,2) 
+    #define REG_CROSSOVER(c) REG_CROSSOVER_POS(c,0), REG_CROSSOVER_POS(c,1), REG_CROSSOVER_POS(c,2), CEID(crossovers[c].tid)
     
     //  Array of the offsets to every eventID in MemStruct/EEPROM/mem, and P/C flags
     const EIDTab eidtab[NUM_EVENT] PROGMEM = {
@@ -247,146 +258,89 @@ uint8_t protocolIdentValue[6] = {   //0xD7,0x58,0x00,0,0,0};
 // Define the pins for the servos.
 uint8_t servoPin[] = { 12, 13, 14, 15 };
 
-// Define the pins for the outputs.
-uint8_t outputPin[] = { 26, 22, 21, 20, 19, 18, 17, 16 };
+// // Define the pins for the outputs.
+// uint8_t outputPin[] = { 26, 22, 21, 20, 19, 18, 17, 16 }; // moved to Global.h
+
+// void moveCrossoverToTargetPosition(uint8_t crossoverNumber, uint8_t crossoverTargetPosition) {
+//   // Start the first servo moving to the target position.
+//   int eventToSend;
+//   switch (crossoverTargetPosition) {
+//     case 0:
+//       eventToSend = servoStateMachine.processStateTransition(servoStateMachine.crossoverArray[crossoverNumber].firstServo, MOVE_TO_POSITION_1);
+//       break;
+//     case 1:
+//       eventToSend= servoStateMachine.processStateTransition(servoStateMachine.crossoverArray[crossoverNumber].firstServo, MOVE_TO_POSITION_2);
+//       break;
+//     case 2:
+//       eventToSend = servoStateMachine.processStateTransition(servoStateMachine.crossoverArray[crossoverNumber].firstServo, MOVE_TO_POSITION_3);
+//       break;
+//   }
+//   // Send any events generated by the individual servo movement. This ensure that frog switching is performed.
+//   if (eventToSend != -1) {
+//     OpenLcb.produce(eventToSend);
+//   }
+
+//   // Send the crossover's leaving event for the current position.
+//   switch (servoStateMachine.crossoverArray[crossoverNumber].currentPosition) {
+//     case UNKNOWN:
+//       // No event to send.
+//       break;
+//     case AT_POSITION_1:
+//       OpenLcb.produce(servoStateMachine.crossoverArray[crossoverNumber].position[0].eventIndexPositionLeaving);
+//       break;
+//     case AT_POSITION_2:
+//       OpenLcb.produce(servoStateMachine.crossoverArray[crossoverNumber].position[1].eventIndexPositionLeaving);
+//       break;
+//     case AT_POSITION_3:
+//       OpenLcb.produce(servoStateMachine.crossoverArray[crossoverNumber].position[2].eventIndexPositionLeaving);
+//       break;
+//   }
+
+//   // Start the second servo moving to the target position.
+//   switch (crossoverTargetPosition) {
+//     case 0:
+//       eventToSend = servoStateMachine.processStateTransition(servoStateMachine.crossoverArray[crossoverNumber].secondServo, MOVE_TO_POSITION_1);
+//       break;
+//     case 1:
+//       eventToSend = servoStateMachine.processStateTransition(servoStateMachine.crossoverArray[crossoverNumber].secondServo, MOVE_TO_POSITION_2);
+//       break;
+//     case 2:
+//       eventToSend = servoStateMachine.processStateTransition(servoStateMachine.crossoverArray[crossoverNumber].secondServo, MOVE_TO_POSITION_3);
+//       break;
+//   }
+//   // Send any events generated by the individual servo movement. This ensure that frog switching is performed.
+//   if (eventToSend != -1) {
+//     OpenLcb.produce(eventToSend);
+//   }
+
+  // // Set a flag so that the move completed states are monitored for both servos reaching their target positions.
+  // // This is checked in the servoStateMachine.update() method.
+  // // When both servos have reached their target position the crossover's reached event will be sent.
+  // switch (crossoverTargetPosition) {
+  //   case 0:
+  //     servoStateMachine.crossoverArray[crossoverNumber].waitingForPosition = AT_POSITION_1;
+  //     break;
+  //   case 1:
+  //     servoStateMachine.crossoverArray[crossoverNumber].waitingForPosition = AT_POSITION_2;
+  //     break;
+  //   case 2:
+  //     servoStateMachine.crossoverArray[crossoverNumber].waitingForPosition = AT_POSITION_3;
+  //     break;
+  // }
+
+//}
 
 // ===== Process Consumer-eventIDs =====
 void pceCallback(uint16_t index) {
-  // Invoked when an event is consumed.
-  //dP("\neventid callback: index="); dP((uint16_t)index);
-  Serial.printf("\n\nevent received: index=0x%02X", index);
+  // Handle this event and return any events which are to be sent.
+  EventsToSend eventsToSend = handleConsumedEvent(index, &servoStateMachine);
 
-  if (INDEX_IS_SERVO_EVENT(index)) {
-    // Update the servo state according to the servo number and position requested.
-    uint8_t servoNumber = index / 9; // servoNumber is 0 - 7. 3 positions per servo, 3 events per position.
-    uint8_t servoPosition = (index % 9) / 3; // servoPosition is 0 - 2.
-    //NODECONFIG.write(EEADDR(servoState[servoNumber]), servoPosition);
-
-    // Update the state for this servo.
-    int eventToSend;
-    switch (servoPosition) {
-      case 0:
-        eventToSend = servoStateMachine.processStateTransition(servoNumber, MOVE_TO_POSITION_1);
-        break;
-      case 1:
-        eventToSend = servoStateMachine.processStateTransition(servoNumber, MOVE_TO_POSITION_2);
-        break;
-      case 2:
-        eventToSend = servoStateMachine.processStateTransition(servoNumber, MOVE_TO_POSITION_3);
-        break;
-    }
-    if (eventToSend != -1) {
-      OpenLcb.produce(eventToSend);
-    }
+  // Send any events which have been returned from handleConsumedEvent().
+  for (int i=0; i<3; i++) {
+   if (eventsToSend.event[i] != -1) {
+     OpenLcb.produce(eventsToSend.event[i]);
   }
-
-  if (INDEX_IS_OUTPUT_EVENT(index)) {
-    // uint8_t outputEvent = index - NUM_SERVO_EVENTS; // there are 16 output events. 4 frogs, each frog has J low, J high, K low and K high.
-    uint8_t outputEvent = index - EVENT_INDEX_OUTPUT_START;
-    Serial.printf("\n\noutputEvent = %d", outputEvent);
-
-    uint8_t outputNumber = (outputEvent) / 2; // outputNumber is 0 - 7.
-    //Serial.printf("\noutputNumber = %d", outputNumber);
-
-    uint8_t frogNumber = outputNumber / 2; // frogNumber is 0 - 3.
-    //Serial.printf("\nfrogNumber = %d", frogNumber);
-
-    uint8_t outputState = (outputEvent) % 2; // outputState: 0 is low, 1 is high.
-    //Serial.printf("\noutputState = %d", outputState);
-
-    if (outputState == 1) {
-      // Turn both frog outputs low to ensure that a frog cannot have both J and K outputs high at the same time.
-      uint8_t outputPinJ = (frogNumber * 2) + 0; // the output pin for the J connection for this frog.
-      //Serial.printf("\noutputPinJ = %d", outputPinJ);
-      digitalWrite(outputPin[outputPinJ], LOW);
-      uint8_t outputPinK = (frogNumber * 2) + 1; // the output pin for the K connection for this frog.
-      //Serial.printf("\noutputPinK = %d", outputPinK);
-      digitalWrite(outputPin[outputPinK], LOW);
-
-      // Turn the required output high.
-      digitalWrite(outputPin[outputNumber], HIGH);
-    } else {
-      digitalWrite(outputPin[outputNumber], LOW);
-    }
-  }
-
-  if (INDEX_IS_CROSSOVER_EVENT(index)) {
-    Serial.printf("\nCrossover event received");
-
-    uint8_t crossoverEvent = index - EVENT_INDEX_CROSSOVER_START;
-    Serial.printf("\n\ncrossoverEvent = %d", crossoverEvent);
-
-    // Determine crossover number and target position.
-    uint8_t crossoverNumber = crossoverEvent / 9; 
-    uint8_t crossoverPosition = (crossoverEvent % 9) / 3;
-    Serial.printf("\nCrossover %d, target position %d", crossoverNumber, crossoverPosition);
-
-    // Start the first servo moving to the target position.
-    int eventToSend;
-    switch (crossoverPosition) {
-      case 0:
-        eventToSend = servoStateMachine.processStateTransition(servoStateMachine.crossoverArray[crossoverNumber].firstServo, MOVE_TO_POSITION_1);
-        break;
-      case 1:
-        eventToSend= servoStateMachine.processStateTransition(servoStateMachine.crossoverArray[crossoverNumber].firstServo, MOVE_TO_POSITION_2);
-        break;
-      case 2:
-        eventToSend = servoStateMachine.processStateTransition(servoStateMachine.crossoverArray[crossoverNumber].firstServo, MOVE_TO_POSITION_3);
-        break;
-    }
-    // Send any events generated by the individual servo movement. This ensure that frog switching is performed.
-    if (eventToSend != -1) {
-      OpenLcb.produce(eventToSend);
-    }
-
-    // Send the crossover's leaving event for the current position.
-    switch (servoStateMachine.crossoverArray[crossoverNumber].currentPosition) {
-      case UNKNOWN:
-        // No event to send.
-        break;
-      case AT_POSITION_1:
-        OpenLcb.produce(servoStateMachine.crossoverArray[crossoverNumber].position[0].eventIndexPositionLeaving);
-        break;
-      case AT_POSITION_2:
-        OpenLcb.produce(servoStateMachine.crossoverArray[crossoverNumber].position[1].eventIndexPositionLeaving);
-        break;
-      case AT_POSITION_3:
-        OpenLcb.produce(servoStateMachine.crossoverArray[crossoverNumber].position[2].eventIndexPositionLeaving);
-        break;
-    }
-
-    // Start the second servo moving to the target position.
-    switch (crossoverPosition) {
-      case 0:
-        eventToSend = servoStateMachine.processStateTransition(servoStateMachine.crossoverArray[crossoverNumber].secondServo, MOVE_TO_POSITION_1);
-        break;
-      case 1:
-        eventToSend = servoStateMachine.processStateTransition(servoStateMachine.crossoverArray[crossoverNumber].secondServo, MOVE_TO_POSITION_2);
-        break;
-      case 2:
-        eventToSend = servoStateMachine.processStateTransition(servoStateMachine.crossoverArray[crossoverNumber].secondServo, MOVE_TO_POSITION_3);
-        break;
-    }
-    // Send any events generated by the individual servo movement. This ensure that frog switching is performed.
-    if (eventToSend != -1) {
-      OpenLcb.produce(eventToSend);
-    }
-
-    // Set a flag so that the move completed states are monitored for both servos reaching their target positions.
-    // This is checked in the servoStateMachine.update() method.
-    // When both servos have reached their target position the crossover's reached event will be sent.
-    switch (crossoverPosition) {
-      case 0:
-        servoStateMachine.crossoverArray[crossoverNumber].waitingForPosition = AT_POSITION_1;
-        break;
-      case 1:
-        servoStateMachine.crossoverArray[crossoverNumber].waitingForPosition = AT_POSITION_2;
-        break;
-      case 2:
-        servoStateMachine.crossoverArray[crossoverNumber].waitingForPosition = AT_POSITION_3;
-        break;
-    }
-  }
+ }
 }
 
 void produceFromInputs() {
@@ -444,31 +398,40 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
 
-  // Set all output pins to outputs.
-  for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
-    pinMode(outputPin[i], OUTPUT);
-    digitalWrite(outputPin[i], LOW);
-  }
+  initialiseOutputPins();
+
+  // // Set all output pins to outputs.
+  // for (uint8_t i = 0; i < NUM_OUTPUTS; i++) {
+  //   pinMode(outputPin[i], OUTPUT);
+  //   digitalWrite(outputPin[i], LOW);
+  // }
 
   NodeID nodeid(NODE_ADDRESS);       // this node's nodeid
   Olcb_init(nodeid, RESET_TO_FACTORY_DEFAULTS);
 
   /* 
-   * Initialise the ServoArray in the ServoStateMachine class.
+   * Initialise the ServoArray object in the ServoStateMachine class.
    */
   ServoArray servoArray; // Temporary variable used to initialise the copy in ServoStateMachine.
   for (int i=0; i<NUM_SERVOS; i++) {
-    servoArray.servo[i].currentState = UNKNOWN;
+    // servoArray.servo[i].currentState = UNKNOWN; Moved to ServoStateMachine::initialiseServos()
     servoArray.servo[i].speedDegreesPerSecond = SERVO_SPEED;
+    //servoStateMachine.servoArray.servo[i].speedDegreesPerSecond = SERVO_SPEED; // causes weird servo pins !!!
     servoArray.servo[i].servoEasing.setServoPin(servoPin[i]);
+    //servoStateMachine.servoArray.servo[i].servoEasing.setServoPin(servoPin[i]); // causes weird servo pins !!!
 
     for (int j=0; j<NUM_POS; j++) {
+      // Copy servo i, position j description from EEPROM to servoArray.
       for (int k=0; k<DESCRIPTION_LENGTH; k++) {
         servoArray.servo[i].position[j].description[k] = NODECONFIG.read(EEADDR(servos[i].pos[j].positiondesc[k]));
       }
+
+      // Copy servo i, position j degrees target servo angle from EEPROM to servoArray.
       servoArray.servo[i].position[j].positionDegrees = NODECONFIG.read(EEADDR(servos[i].pos[j].pos)); 
-      servoArray.servo[i].position[j].eventIndexPositionReached = (i * 9) + (j * 3) + 1;
-      servoArray.servo[i].position[j].eventIndexPositionLeaving = (i * 9) + (j * 3) + 2;
+
+      // Calculate the reached and leaving event indexes for servo i, position j.
+      servoArray.servo[i].position[j].eventIndexPositionReached = (i * NUM_EVENTS_PER_SERVO) + (j * NUM_POS) + 1;
+      servoArray.servo[i].position[j].eventIndexPositionLeaving = (i * NUM_EVENTS_PER_SERVO) + (j * NUM_POS) + 2;
 
       // Send the leaving event for all positions of all servos to initialise the JMRI sensor objects.
       OpenLcb.produce(servoArray.servo[i].position[j].eventIndexPositionLeaving);
@@ -529,7 +492,6 @@ void loop() {
   for (uint8_t i=0; i<NUM_SERVOS; i++) {
     eventToSend = servoStateMachine.update(i);
     if (eventToSend != -1) {
-      //Serial.printf("\nServo %d sending event 'reached position %d' (index=%d)", servoNumber+1, position+1, index); // TO DO: == need to update ===
       OpenLcb.produce(eventToSend);
     }
   }

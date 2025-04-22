@@ -57,6 +57,16 @@ class ServoStateMachine {
     int update(uint8_t servoNumber);
 
     /**
+     * Returns the current state for servoNumber.
+     */
+    State currentServoState(uint8_t servoNumber);
+
+    /**
+     * Returns the current state for crossoverNumber.
+     */
+    State currentCrossoverPosition(uint8_t crossoverNumber);
+
+    /**
      * Performs the following functions;-
      * - updates the current state for servoNumber.
      * - if required, causes the servo to start moving.
